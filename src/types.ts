@@ -5,6 +5,13 @@ export interface MouseInteraction {
   timestamp: number; // millisecond timestamp relative to start
 }
 
+export interface CaptionSegment {
+  id: string;
+  text: string;
+  startTime: number; // in milliseconds relative to start
+  endTime: number; // in milliseconds relative to start
+}
+
 export interface RecordingSession {
   id: string;
   rawBlob?: Blob;
@@ -15,6 +22,7 @@ export interface RecordingSession {
   width: number;
   height: number;
   type: 'sandbox' | 'screen' | 'youtube';
+  captions?: CaptionSegment[];
 }
 
 export interface ZoomSettings {

@@ -54,6 +54,7 @@ export default function SharedFeedbackPortal({ videoId, onBackToStudio }: Shared
   const [youtubeUrl, setYoutubeUrl] = useState<string | null>(null);
   const [segments, setSegments] = useState<any[]>([]);
   const [zoomSettings, setZoomSettings] = useState<any>(null);
+  const [captions, setCaptions] = useState<any[]>([]);
 
   const youtubePlayerRef = useRef<any>(null);
   const youtubeTransformRef = useRef<HTMLDivElement>(null);
@@ -82,6 +83,9 @@ export default function SharedFeedbackPortal({ videoId, onBackToStudio }: Shared
       
       if (videoRecord) {
         setSessionType(videoRecord.type || 'screen');
+        if (videoRecord.captions) {
+          setCaptions(videoRecord.captions);
+        }
         if (videoRecord.type === 'youtube') {
           setYoutubeUrl(videoRecord.youtubeUrl || null);
           setSegments(videoRecord.segments || []);
@@ -447,6 +451,10 @@ export default function SharedFeedbackPortal({ videoId, onBackToStudio }: Shared
     );
   }
 
+  const activeCaption = captions.find(
+    cap => (currentTime * 1000) >= cap.startTime && (currentTime * 1000) <= cap.endTime
+  );
+
   return (
     <div className="flex flex-col gap-8 py-2 animate-in fade-in duration-500">
       
@@ -558,6 +566,15 @@ export default function SharedFeedbackPortal({ videoId, onBackToStudio }: Shared
               <span className="h-1.5 w-1.5 rounded-full bg-indigo-500 block animate-pulse"></span>
               AUTO-ZOOM EFFECTS ENABLED
             </div>
+
+            {/* CAPTIONS OVERLAY */}
+            {activeCaption && (
+              <div className="absolute bottom-12 left-1/2 -translate-x-1/2 z-20 max-w-[85%] text-center pointer-events-none animate-in fade-in zoom-in-95 duration-150">
+                <span className="px-4 py-2 bg-black/85 text-white text-xs md:text-sm font-semibold rounded-lg shadow-xl border border-slate-800/60 leading-relaxed font-sans backdrop-blur-sm">
+                  💬 {activeCaption.text}
+                </span>
+              </div>
+            )}
           </div>
 
           {/* PLAYER CONTROLS & TIMELINE WITH COMMENT DOTS */}

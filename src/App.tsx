@@ -158,6 +158,8 @@ export default function App() {
   const recordingStartTimeRef = useRef<number>(0);
   const mouseHistoryRef = useRef<MouseInteraction[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const recognitionRef = useRef<any>(null);
+  const capturedCaptionsRef = useRef<any[]>([]);
 
   // Cleanup active streams on unmount to safeguard camera/mic permissions
   useEffect(() => {
@@ -167,6 +169,12 @@ export default function App() {
   }, []);
 
   const stopAllActiveTracks = () => {
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.stop();
+      } catch (e) {}
+      recognitionRef.current = null;
+    }
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
       streamRef.current = null;
@@ -340,7 +348,8 @@ export default function App() {
           timestamp: Date.now(),
           width: 1280,
           height: 720,
-          type: 'screen'
+          type: 'screen',
+          captions: capturedCaptionsRef.current.length > 0 ? [...capturedCaptionsRef.current] : undefined
         };
 
         setSession(newSession);
@@ -362,6 +371,43 @@ export default function App() {
         type: 'move',
         timestamp: 0
       });
+
+      capturedCaptionsRef.current = [];
+      if (audioEnabled) {
+        // @ts-ignore
+        const SpeechRecognitionClass = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (SpeechRecognitionClass) {
+          try {
+            const rec = new SpeechRecognitionClass();
+            rec.continuous = true;
+            rec.interimResults = false;
+            rec.lang = 'en-US';
+            rec.onresult = (event: any) => {
+              const lastResultIndex = event.resultIndex;
+              const result = event.results[lastResultIndex];
+              if (result && result[0]) {
+                const text = result[0].transcript.trim();
+                if (text) {
+                  const relativeTimeMs = Date.now() - recordingStartTimeRef.current;
+                  capturedCaptionsRef.current.push({
+                    id: `cap_${Math.random().toString(36).substring(2, 9)}`,
+                    text,
+                    startTime: Math.max(0, relativeTimeMs - 2200),
+                    endTime: relativeTimeMs + 1800
+                  });
+                }
+              }
+            };
+            rec.onerror = (e: any) => {
+              console.warn("Speech recognition error", e);
+            };
+            rec.start();
+            recognitionRef.current = rec;
+          } catch (speechErr) {
+            console.warn("Could not start speech recognition", speechErr);
+          }
+        }
+      }
 
       mediaRecorder.start();
       setIsRecording(true);

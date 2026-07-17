@@ -48,7 +48,8 @@ export async function saveSharedVideo(
   youtubeUrl?: string,
   segments?: any[],
   zoomSettings?: any,
-  type?: 'screen' | 'sandbox' | 'youtube'
+  type?: 'screen' | 'sandbox' | 'youtube',
+  captions?: any[]
 ): Promise<void> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
@@ -65,6 +66,7 @@ export async function saveSharedVideo(
       segments,
       zoomSettings,
       type,
+      captions,
       createdAt: Date.now(),
     };
 
@@ -90,6 +92,7 @@ export async function getSharedVideo(
   segments?: any[];
   zoomSettings?: any;
   type?: 'screen' | 'sandbox' | 'youtube';
+  captions?: any[];
 } | null> {
   try {
     const db = await openDB();

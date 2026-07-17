@@ -24,9 +24,13 @@ import {
   ZoomOut,
   Share2,
   Link,
-  Copy
+  Copy,
+  Mic,
+  Volume2,
+  Edit3,
+  Languages
 } from 'lucide-react';
-import { RecordingSession, ZoomSettings, MouseInteraction } from '../types';
+import { RecordingSession, ZoomSettings, MouseInteraction, CaptionSegment } from '../types';
 import { saveSharedVideo } from '../lib/shareDb';
 
 const WIDTH = 1280;
@@ -358,6 +362,199 @@ export default function VideoPostProcessor({ session, onReset }: VideoPostProces
   const [isSharing, setIsSharing] = useState(false);
   const [shareLink, setShareLink] = useState<string | null>(null);
   const [copiedLink, setCopiedLink] = useState(false);
+
+  // Voice Transcription & Captions States
+  const [captions, setCaptions] = useState<CaptionSegment[]>(session.captions || []);
+  const [showCaptionsEnabled, setShowCaptionsEnabled] = useState(true);
+  const [isDictating, setIsDictating] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [transcribeError, setTranscribeError] = useState<string | null>(null);
+  const dictationRecognitionRef = useRef<any>(null);
+  const [compiledTime, setCompiledTime] = useState(0);
+
+  const handleAddCaption = () => {
+    const newCap: CaptionSegment = {
+      id: `cap_${Math.random().toString(36).substring(2, 9)}`,
+      text: 'New subtitle text...',
+      startTime: currentTime,
+      endTime: Math.min(sessionDuration, currentTime + 3000)
+    };
+    const updated = [...captions, newCap].sort((a, b) => a.startTime - b.startTime);
+    setCaptions(updated);
+    session.captions = updated;
+  };
+
+  const handleEditCaptionText = (id: string, newText: string) => {
+    const updated = captions.map(cap => cap.id === id ? { ...cap, text: newText } : cap);
+    setCaptions(updated);
+    session.captions = updated;
+  };
+
+  const handleDeleteCaption = (id: string) => {
+    const updated = captions.filter(cap => cap.id !== id);
+    setCaptions(updated);
+    session.captions = updated;
+  };
+
+  const handleAutoGenerateCaptions = async (mode: 'audio' | 'visual') => {
+    setIsTranscribing(true);
+    setTranscribeError(null);
+    try {
+      let captionsResult: CaptionSegment[] = [];
+
+      if (session.type === 'youtube') {
+        // Since YouTube is an external URL, call backend to generate context-grounded high-quality subtitles
+        const response = await fetch("/api/transcribe-youtube", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            duration: sessionDuration,
+            title: session.rawVideoUrl,
+            mode
+          })
+        });
+
+        if (!response.ok) {
+          throw new Error(`Failed to auto-generate YouTube captions (${mode})`);
+        }
+
+        const data = await response.json();
+        captionsResult = data.captions || [];
+      } else {
+        if (!session.rawBlob) {
+          throw new Error("No recorded video/audio content is available to transcribe.");
+        }
+
+        // Convert Blob to base64 for transmission
+        const base64Data = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            if (typeof reader.result === 'string') {
+              const base64 = reader.result.split(',')[1];
+              resolve(base64);
+            } else {
+              reject(new Error("Failed to convert video blob to base64"));
+            }
+          };
+          reader.onerror = () => reject(reader.error);
+          reader.readAsDataURL(session.rawBlob!);
+        });
+
+        const response = await fetch("/api/transcribe", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            audioData: base64Data,
+            mimeType: session.rawBlob.type || "video/webm",
+            mode
+          })
+        });
+
+        if (!response.ok) {
+          const errData = await response.json().catch(() => ({}));
+          throw new Error(errData.error || `Failed to analyze video (${mode}) via Gemini`);
+        }
+
+        const data = await response.json();
+        captionsResult = data.captions || [];
+      }
+
+      if (captionsResult.length === 0) {
+        if (mode === 'audio') {
+          alert("Gemini analyzed the recording but did not detect any spoken speech. Tip: Try using 'Visual Walkthrough Generator (AI)' to analyze visual actions and flows directly!");
+        } else {
+          alert("Gemini analyzed the video frames but did not detect active workflows to transcribe.");
+        }
+      } else {
+        const mapped = captionsResult.map((c, idx) => ({
+          ...c,
+          id: c.id || `cap_${Date.now()}_${idx}`
+        }));
+        const valid = mapped.filter(c => c.startTime < sessionDuration);
+        setCaptions(valid);
+        session.captions = valid;
+      }
+    } catch (err: any) {
+      console.error("Transcription error:", err);
+      setTranscribeError(err.message || "Failed to transcribe video");
+      alert(`AI Video Analysis Failed: ${err.message || "Unknown error"}`);
+    } finally {
+      setIsTranscribing(false);
+    }
+  };
+
+  const toggleDictation = () => {
+    if (isDictating) {
+      if (dictationRecognitionRef.current) {
+        try {
+          dictationRecognitionRef.current.stop();
+        } catch (e) {}
+      }
+      setIsDictating(false);
+    } else {
+      // @ts-ignore
+      const SpeechRecognitionClass = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRecognitionClass) {
+        alert("Web Speech recognition is not supported in this browser. Please use Google Chrome, Safari, or Microsoft Edge. Tip: Try opening the application in a new tab if it is blocked inside the preview iframe.");
+        return;
+      }
+
+      try {
+        const rec = new SpeechRecognitionClass();
+        rec.continuous = false;
+        rec.interimResults = false;
+        rec.lang = 'en-US';
+
+        rec.onstart = () => {
+          setIsDictating(true);
+        };
+
+        rec.onresult = (event: any) => {
+          const text = event.results[0]?.[0]?.transcript?.trim();
+          if (text) {
+            const newCap: CaptionSegment = {
+              id: `cap_${Math.random().toString(36).substring(2, 9)}`,
+              text,
+              startTime: currentTime,
+              endTime: Math.min(sessionDuration, currentTime + 3200)
+            };
+            setCaptions(prev => {
+              const updated = [...prev, newCap].sort((a, b) => a.startTime - b.startTime);
+              session.captions = updated;
+              return updated;
+            });
+          }
+        };
+
+        rec.onerror = (e: any) => {
+          console.error("Dictation recognition error:", e);
+          setIsDictating(false);
+          let msg = "Dictation error occurred.";
+          if (e.error === 'not-allowed') {
+            msg = "Microphone access is blocked or not allowed. Please grant microphone permission. Tip: If speech recognition is blocked inside the preview iframe, try opening the application in a new tab!";
+          } else if (e.error === 'no-speech') {
+            msg = "No speech detected. Please try speaking closer to your microphone.";
+          } else if (e.error === 'aborted') {
+            msg = "Dictation was aborted.";
+          } else {
+            msg = `Dictation failed: ${e.error || 'unknown error'}. Tip: Try opening the app in a new tab for proper browser Speech Recognition!`;
+          }
+          alert(msg);
+        };
+
+        rec.onend = () => {
+          setIsDictating(false);
+        };
+
+        rec.start();
+        dictationRecognitionRef.current = rec;
+      } catch (err) {
+        console.error("Failed starting speech dictation:", err);
+        setIsDictating(false);
+        alert("Failed to start speech dictation. Try opening the app in a new tab.");
+      }
+    }
+  };
 
   const [isDraggingFocus, setIsDraggingFocus] = useState(false);
 
@@ -1124,18 +1321,32 @@ export default function VideoPostProcessor({ session, onReset }: VideoPostProces
   };
 
   const handleShareVideo = async () => {
-    if (!exportedVideoUrl) return;
+    if (!exportedVideoUrl && session.type !== 'youtube') return;
     setIsSharing(true);
     setShareLink(null);
     setCopiedLink(false);
 
     try {
-      const res = await fetch(exportedVideoUrl);
-      const blob = await res.blob();
+      let blob: Blob | undefined = undefined;
+      if (exportedVideoUrl) {
+        const res = await fetch(exportedVideoUrl);
+        blob = await res.blob();
+      }
 
-      const videoId = `vid_${Math.random().toString(36).substr(2, 9)}`;
-      const fileName = session.type === 'screen' ? 'Screen AutoZoom Video' : 'Sandbox Recording';
-      await saveSharedVideo(videoId, fileName, blob, session.duration, compiledMimeType);
+      const videoId = `vid_${Math.random().toString(36).substring(2, 9)}`;
+      const fileName = session.type === 'screen' ? 'Screen AutoZoom Video' : session.type === 'youtube' ? 'YouTube Import Video' : 'Sandbox Recording';
+      await saveSharedVideo(
+        videoId, 
+        fileName, 
+        blob, 
+        sessionDuration, 
+        compiledMimeType, 
+        session.type === 'youtube' ? session.rawVideoUrl : undefined,
+        segments,
+        settings,
+        session.type,
+        captions
+      );
 
       const absoluteLink = `${window.location.origin}${window.location.pathname}?share=${videoId}`;
       setShareLink(absoluteLink);
@@ -1185,6 +1396,14 @@ export default function VideoPostProcessor({ session, onReset }: VideoPostProces
     { value: '#f59e0b', label: 'Amber' },
     { value: '#3b82f6', label: 'Blue' }
   ];
+
+  const activeCaption = captions.find(
+    cap => currentTime >= cap.startTime && currentTime <= cap.endTime
+  );
+
+  const activeCompiledCaption = captions.find(
+    cap => compiledTime >= cap.startTime && compiledTime <= cap.endTime
+  );
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 w-full max-w-7xl mx-auto">
@@ -1239,7 +1458,16 @@ export default function VideoPostProcessor({ session, onReset }: VideoPostProces
                 controls
                 autoPlay
                 playsInline
+                onTimeUpdate={(e) => setCompiledTime(e.currentTarget.currentTime * 1000)}
               />
+              {/* CAPTIONS OVERLAY (Compiled Mode) */}
+              {showCaptionsEnabled && activeCompiledCaption && (
+                <div className="absolute bottom-16 left-1/2 -translate-x-1/2 z-20 max-w-[85%] text-center pointer-events-none animate-in fade-in zoom-in-95 duration-150">
+                  <span className="px-4 py-2.5 bg-black/85 text-white text-xs md:text-sm font-semibold rounded-lg shadow-2xl border border-slate-800/80 leading-relaxed font-sans backdrop-blur-sm">
+                    💬 {activeCompiledCaption.text}
+                  </span>
+                </div>
+              )}
               <div className="absolute top-3 left-3 bg-emerald-950/95 border border-emerald-500/40 text-emerald-300 font-mono text-[10px] px-2.5 py-1 rounded-full select-none shadow-md z-10 flex items-center gap-1">
                 <span className="h-2 w-2 rounded-full bg-emerald-500 block animate-pulse"></span>
                 PREVIEWING COMPILED AUTO-ZOOM VIDEO
@@ -1323,6 +1551,15 @@ export default function VideoPostProcessor({ session, onReset }: VideoPostProces
               </div>
               <span className="text-[10px] font-mono font-bold text-indigo-400 mt-2">
                 {exportProgress}% COMPLETE
+              </span>
+            </div>
+          )}
+
+          {/* CAPTIONS OVERLAY (Live Canvas Mode) */}
+          {previewMode === 'live' && showCaptionsEnabled && activeCaption && (
+            <div className="absolute bottom-12 left-1/2 -translate-x-1/2 z-20 max-w-[85%] text-center pointer-events-none animate-in fade-in zoom-in-95 duration-150">
+              <span className="px-4 py-2 bg-black/85 text-white text-xs md:text-sm font-semibold rounded-lg shadow-xl border border-slate-800/60 leading-relaxed font-sans backdrop-blur-sm">
+                💬 {activeCaption.text}
               </span>
             </div>
           )}
@@ -1771,6 +2008,149 @@ export default function VideoPostProcessor({ session, onReset }: VideoPostProces
             })()}
           </div>
         )}
+
+        {/* VOICE TRANSCRIPTION & CAPTIONS PANEL */}
+        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl flex flex-col gap-4">
+          <div className="flex justify-between items-center">
+            <h3 className="text-xs font-bold tracking-wider text-slate-300 uppercase flex items-center gap-2">
+              <Mic className="w-4 h-4 text-indigo-400" />
+              Voiceover & Captions
+            </h3>
+            <span className="text-[10px] font-semibold text-indigo-400 font-mono bg-indigo-950 px-2.5 py-0.5 rounded-full border border-indigo-900">
+              {captions.length} lines
+            </span>
+          </div>
+
+          <div className="bg-slate-950 border border-slate-800/80 p-3 rounded-xl flex flex-col gap-3">
+            <div className="flex justify-between items-center">
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wide">Caption Overlay Toggle</span>
+              <button
+                id="btn-toggle-cc-overlay"
+                onClick={() => setShowCaptionsEnabled(!showCaptionsEnabled)}
+                className={`relative inline-flex h-5 w-10 items-center rounded-full transition-all ${
+                  showCaptionsEnabled ? 'bg-indigo-600' : 'bg-slate-800'
+                } cursor-pointer`}
+                title="Toggle Subtitles CC Overlay"
+              >
+                <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-all ${
+                  showCaptionsEnabled ? 'translate-x-5.5' : 'translate-x-1'
+                }`} />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 mt-1">
+              <button
+                id="btn-dictate-caption"
+                onClick={toggleDictation}
+                className={`flex items-center justify-center gap-1.5 py-2 px-2.5 rounded-lg border text-xs font-semibold cursor-pointer transition-all ${
+                  isDictating
+                    ? 'bg-rose-600/25 border-rose-500 text-rose-300 animate-pulse font-bold'
+                    : 'bg-slate-900 border-slate-800 text-slate-300 hover:border-slate-700 hover:text-slate-200'
+                }`}
+                title="Record real-time voice with automated Speech-to-Text transcription"
+              >
+                <Mic className={`w-3.5 h-3.5 ${isDictating ? 'text-rose-400' : ''}`} />
+                <span>{isDictating ? 'Dictating...' : 'Dictate (STT)'}</span>
+              </button>
+
+              <button
+                id="btn-add-manual-caption"
+                onClick={handleAddCaption}
+                className="flex items-center justify-center gap-1.5 bg-slate-900 border border-slate-800 text-slate-300 hover:border-slate-700 hover:text-slate-200 py-2 px-2.5 rounded-lg text-xs font-semibold cursor-pointer transition-all"
+                title="Manually insert a time-coded subtitle"
+              >
+                <Plus className="w-3.5 h-3.5 text-indigo-400" />
+                <span>Add Subtitle</span>
+              </button>
+            </div>
+
+            {captions.length === 0 && (
+              <div className="flex flex-col gap-2 mt-1">
+                <button
+                  id="btn-auto-generate-captions"
+                  onClick={() => handleAutoGenerateCaptions('audio')}
+                  disabled={isTranscribing}
+                  className={`w-full flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-xs font-bold transition-all ${
+                    isTranscribing 
+                      ? 'bg-slate-900 border border-slate-800 text-slate-500 cursor-not-allowed animate-pulse'
+                      : 'bg-indigo-950/40 border border-indigo-500/25 hover:border-indigo-500/40 text-indigo-300 hover:text-indigo-200 cursor-pointer'
+                  }`}
+                  title="Automatically transcribe recorded speech using Gemini AI"
+                >
+                  <Languages className={`w-4 h-4 text-indigo-400 ${isTranscribing ? 'animate-spin' : 'animate-pulse'}`} />
+                  <span>{isTranscribing ? '🤖 Transcribing via Gemini...' : '🎙️ Auto-Transcribe Voice (AI)'}</span>
+                </button>
+
+                <button
+                  id="btn-auto-generate-visual-captions"
+                  onClick={() => handleAutoGenerateCaptions('visual')}
+                  disabled={isTranscribing}
+                  className={`w-full flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-xs font-bold transition-all ${
+                    isTranscribing 
+                      ? 'bg-slate-900 border border-slate-800 text-slate-500 cursor-not-allowed animate-pulse'
+                      : 'bg-emerald-950/40 border border-emerald-500/25 hover:border-emerald-500/40 text-emerald-300 hover:text-emerald-200 cursor-pointer'
+                  }`}
+                  title="Analyze visual video frames to generate synchronized walkthrough step-by-step descriptions"
+                >
+                  <Eye className={`w-4 h-4 text-emerald-400 ${isTranscribing ? 'animate-spin' : 'animate-pulse'}`} />
+                  <span>{isTranscribing ? '🤖 Analyzing Visuals...' : '👀 Visual Walkthrough Generator (AI)'}</span>
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* LIST OF TRANSCRIPTS */}
+          {captions.length > 0 && (
+            <div className="flex flex-col gap-2 max-h-56 overflow-y-auto pr-1 border-t border-slate-800/60 pt-3">
+              {captions.map((cap) => {
+                const isActive = currentTime >= cap.startTime && currentTime <= cap.endTime;
+                return (
+                  <div
+                    key={cap.id}
+                    className={`group flex flex-col gap-1.5 p-2.5 rounded-xl border text-xs transition-all ${
+                      isActive
+                        ? 'bg-indigo-950/40 border-indigo-500/40 text-indigo-200'
+                        : 'bg-slate-950/60 border-slate-900 hover:border-slate-800 text-slate-400'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between font-mono text-[9px]">
+                      <button
+                        onClick={() => {
+                          setCurrentTime(cap.startTime);
+                          if (session.type === 'youtube') {
+                            youtubePlayerRef.current?.seekTo(cap.startTime / 1000, true);
+                          } else if (videoRef.current) {
+                            videoRef.current.currentTime = cap.startTime / 1000;
+                          }
+                        }}
+                        className="text-indigo-400 hover:text-indigo-300 font-bold flex items-center gap-1 cursor-pointer"
+                        title="Seek player to segment"
+                      >
+                        <Clock className="w-3 h-3 text-indigo-500" />
+                        <span>[{(cap.startTime / 1000).toFixed(1)}s - {(cap.endTime / 1000).toFixed(1)}s]</span>
+                      </button>
+
+                      <button
+                        onClick={() => handleDeleteCaption(cap.id)}
+                        className="opacity-0 group-hover:opacity-100 text-rose-500 hover:text-rose-400 transition-all p-0.5 rounded cursor-pointer"
+                        title="Delete caption segment"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    </div>
+
+                    <textarea
+                      value={cap.text}
+                      onChange={(e) => handleEditCaptionText(cap.id, e.target.value)}
+                      className="bg-transparent border-0 outline-none p-0 resize-none w-full text-[11px] leading-relaxed text-slate-300 focus:text-white font-sans focus:bg-slate-900/50 focus:p-1 focus:rounded-md"
+                      rows={2}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
 
         {/* COMPILE AND DOWNLOAD BOX */}
         <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl flex flex-col gap-4">
