@@ -1,0 +1,6 @@
+{
+  "name": "Screen Recorder with Auto-Zoom",
+  "description": "A professional screen recording web application that tracks mouse interactions and applies dynamic auto-zoom effects on recorded content based on mouse click and movement activity.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
